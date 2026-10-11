@@ -560,6 +560,16 @@ pub fn populate_demo(app: &mut App) {
             seven_day_window_minutes: Some(10_080),
             updated_at: Some(now_secs() - 5),
         },
+        RateLimitInfo {
+            source: "kiro".into(),
+            five_hour_pct: None,
+            five_hour_resets_at: None,
+            five_hour_window_minutes: None,
+            seven_day_pct: Some(17.0),
+            seven_day_resets_at: Some(now_secs() + 19 * 24 * 3600),
+            seven_day_window_minutes: Some(43_200),
+            updated_at: Some(now_secs() - 60),
+        },
     ];
 
     // --- Token rates (synthetic sparkline) ---

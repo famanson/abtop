@@ -8,6 +8,10 @@ const CLAUDE_RATE_FILE: &str = "abtop-rate-limits.json";
 /// Cached Codex rate limit: ~/.cache/abtop/codex-rate-limits.json
 const CODEX_CACHE_FILE: &str = "codex-rate-limits.json";
 
+/// Cached Kiro quota: kiro-rate-limits.json in ~/Library/Caches/abtop on macOS,
+/// ~/.cache/abtop elsewhere
+const KIRO_CACHE_FILE: &str = "kiro-rate-limits.json";
+
 #[derive(Debug, Deserialize)]
 struct RateLimitFile {
     #[serde(default)]
@@ -69,17 +73,40 @@ pub fn read_codex_cache() -> Option<RateLimitInfo> {
     read_rate_file(&path, "codex")
 }
 
+/// Kiro quota written by the TUI's KiroQuotaFetcher.
+/// Its single monthly window sits in the seven_day slot.
+pub fn read_kiro_cache() -> Option<RateLimitInfo> {
+    let path = kiro_cache_path()?;
+    read_rate_file(&path, "kiro").map(|mut info| {
+        info.source = "kiro".into();
+        info
+    })
+}
+
 /// Write Codex rate limit to cache file (atomic: write temp + rename).
 pub fn write_codex_cache(info: &RateLimitInfo) {
-    let Some(path) = codex_cache_path() else {
-        return;
-    };
+    if let Some(path) = codex_cache_path() {
+        let _ = write_cache(&path, "codex", info);
+    }
+}
+
+/// Write the Kiro quota to its cache file (atomic: write temp + rename).
+pub fn write_kiro_cache(info: &RateLimitInfo) -> std::io::Result<()> {
+    write_cache(
+        &kiro_cache_path().ok_or(std::io::ErrorKind::NotFound)?,
+        "kiro",
+        info,
+    )
+}
+
+fn write_cache(path: &Path, source: &str, info: &RateLimitInfo) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
     let json = format!(
-        r#"{{"source":"codex","five_hour":{},"seven_day":{},"updated_at":{}}}"#,
+        r#"{{"source":"{}","five_hour":{},"seven_day":{},"updated_at":{}}}"#,
+        source,
         window_json(
             info.five_hour_pct,
             info.five_hour_resets_at,
@@ -96,10 +123,12 @@ pub fn write_codex_cache(info: &RateLimitInfo) {
     );
 
     // Atomic write: temp file + rename to avoid corrupted reads
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, &json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
+    let written = std::fs::write(&tmp, &json).and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
+    written
 }
 
 fn window_json(pct: Option<f64>, resets_at: Option<u64>, window_minutes: Option<u64>) -> String {
@@ -124,6 +153,10 @@ fn window_json(pct: Option<f64>, resets_at: Option<u64>, window_minutes: Option<
 
 fn codex_cache_path() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join("abtop").join(CODEX_CACHE_FILE))
+}
+
+fn kiro_cache_path() -> Option<PathBuf> {
+    dirs::cache_dir().map(|d| d.join("abtop").join(KIRO_CACHE_FILE))
 }
 
 fn read_rate_file(path: &Path, default_source: &str) -> Option<RateLimitInfo> {

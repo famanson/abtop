@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::collector::kiro_quota::KiroQuotaFetcher;
 use crate::locale::t;
 use crate::model::RateLimitInfo;
 use crate::theme::Theme;
@@ -7,6 +8,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
 
 use super::{btop_block_active, fmt_tokens, grad_at, make_gradient, remaining_bar, styled_label};
 
@@ -14,7 +16,7 @@ use super::{btop_block_active, fmt_tokens, grad_at, make_gradient, remaining_bar
 const STALE_SECS: u64 = 600;
 
 /// Fixed source order so columns stay stable across runs.
-const SOURCES: &[&str] = &["claude", "codex"];
+const SOURCES: &[&str] = &["claude", "codex", "kiro"];
 
 pub(crate) fn draw_quota_panel(f: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     draw_quota_panel_active(f, app, area, theme, false);
@@ -45,7 +47,7 @@ pub(crate) fn draw_quota_panel_active(
     let ticks_per_min = 30usize;
     let tokens_per_min: f64 = rates.iter().rev().take(ticks_per_min).sum();
 
-    // Split into side-by-side columns: one per known source (CLAUDE | CODEX).
+    // Split into side-by-side columns: one per known source (CLAUDE | CODEX | KIRO).
     // Columns are always rendered so the panel layout stays stable even when a
     // source has no data yet.
     let num_sources = SOURCES.len() as u16;
@@ -70,7 +72,21 @@ pub(crate) fn draw_quota_panel_active(
             .rate_limits
             .iter()
             .find(|r| r.source.eq_ignore_ascii_case(source));
-        draw_source_column(f, col_area, source, rl, &cpu_grad, theme);
+        let hint = match *source {
+            "claude" => t("quota.abtop_setup"),
+            "kiro" if app.kiro_quota.is_none() => String::new(),
+            "kiro"
+                if app
+                    .kiro_quota
+                    .as_ref()
+                    .is_some_and(KiroQuotaFetcher::cache_failed) =>
+            {
+                t("quota.kiro_cache_failed")
+            }
+            "kiro" => t("quota.kiro_setup"),
+            _ => t("quota.run_codex"),
+        };
+        draw_source_column(f, col_area, source, &hint, rl, &cpu_grad, theme);
     }
 
     // Total tokens summary on last row (full width)
@@ -100,36 +116,45 @@ fn draw_source_column(
     f: &mut Frame,
     area: Rect,
     source: &str,
+    hint: &str,
     rl: Option<&RateLimitInfo>,
     cpu_grad: &[ratatui::style::Color; 101],
     theme: &Theme,
 ) {
     let col_w_usize = area.width as usize;
-    let bar_w = col_w_usize.saturating_sub(10).clamp(2, 8);
+    // Under 12 cells the bar and the countdown's second unit clip the percent and the hours.
+    let compact = area.width < 12;
+    let (pad, bar_w, pct_w) = if compact {
+        ("", 0, 0)
+    } else {
+        (" ", col_w_usize.saturating_sub(10).clamp(2, 8), 3)
+    };
 
     let Some(rl) = rl else {
-        let hint = if source.eq_ignore_ascii_case("claude") {
-            t("quota.abtop_setup")
-        } else {
-            t("quota.run_codex")
-        };
-        let no_data = t("quota.no_data");
-        let lines = vec![
-            Line::from(Span::styled(
-                format!(" {}", source.to_uppercase()),
-                Style::default()
-                    .fg(theme.title)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!("  — {}", no_data),
+        let mut lines = vec![Line::from(Span::styled(
+            format!("{pad}{}", source.to_uppercase()),
+            Style::default()
+                .fg(theme.title)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        // A clipped "— no" or hint reads as an answer, so compact shows the dash alone.
+        if compact {
+            lines.push(Line::from(Span::styled(
+                "—",
                 Style::default().fg(theme.inactive_fg),
-            )),
-            Line::from(Span::styled(
-                format!(" {}", hint),
-                Style::default().fg(theme.graph_text),
-            )),
-        ];
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("  — {}", t("quota.no_data")),
+                Style::default().fg(theme.inactive_fg),
+            )));
+            if hint.width() < col_w_usize {
+                lines.push(Line::from(Span::styled(
+                    format!(" {}", hint),
+                    Style::default().fg(theme.graph_text),
+                )));
+            }
+        }
         f.render_widget(Paragraph::new(lines), area);
         return;
     };
@@ -154,7 +179,7 @@ fn draw_source_column(
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!(" {}", rl.source.to_uppercase()),
+        format!("{pad}{}", rl.source.to_uppercase()),
         Style::default()
             .fg(source_color)
             .add_modifier(Modifier::BOLD),
@@ -165,71 +190,62 @@ fn draw_source_column(
     // get the bar (the % is approximately correct) but no countdown row.
     let show_reset = !is_stale;
 
-    if let Some(used_pct) = rl.five_hour_pct {
+    // A window's bar row and reset row. The reset row is always reserved so the
+    // columns line up, blank when the source is stale or the reset is past.
+    let window_rows = |label: String, used_pct: f64, reset: String| {
         let remaining = (100.0 - used_pct).clamp(0.0, 100.0);
-        let reset = if show_reset {
-            rl.five_hour_resets_at
-                .map(format_reset_time)
-                .unwrap_or_default()
+        let pct = format!("{:>pct_w$.0}%", remaining);
+        let mut s = Vec::new();
+        // A row exactly the column's width runs into the next column; a clipped percent misreads.
+        if label.width() + pct.width() <= col_w_usize {
+            s.push(styled_label(&format!("{pad}{label}"), theme.graph_text));
+            s.extend(remaining_bar(remaining, bar_w, cpu_grad, theme.meter_bg));
+        }
+        let sep = if compact && label.width() + 1 + pct.width() >= col_w_usize {
+            ""
         } else {
-            String::new()
+            " "
         };
         let c = grad_at(cpu_grad, used_pct);
-        let label_5h = format_window_label(rl.five_hour_window_minutes, t("quota.5h"));
-        let mut s = vec![styled_label(
-            format!(" {}", label_5h).as_str(),
-            theme.graph_text,
-        )];
-        s.extend(remaining_bar(remaining, bar_w, cpu_grad, theme.meter_bg));
-        s.push(Span::styled(
-            format!(" {:>3.0}%", remaining),
-            Style::default().fg(c),
-        ));
-        lines.push(Line::from(s));
-        // Always reserve the row so both columns line up vertically;
-        // when there's nothing meaningful to show (stale source or the
-        // cached reset moment is past), render it blank.
-        lines.push(Line::from(Span::styled(
-            if reset.is_empty() {
-                String::new()
+        s.push(Span::styled(format!("{sep}{pct}"), Style::default().fg(c)));
+        // Each fallback keeps whole units: the prefix and largest unit, then that unit alone.
+        let tokens = reset.split(' ').take(2).collect::<Vec<_>>().join(" ");
+        let wide = format!("  {reset}");
+        let row = if reset.is_empty() {
+            String::new()
+        } else if !compact {
+            if wide.width() > col_w_usize {
+                format!("  {tokens}")
             } else {
-                format!("  {}", reset)
-            },
-            Style::default().fg(theme.graph_text),
-        )));
+                wide
+            }
+        } else if tokens.width() > col_w_usize {
+            reset.split(' ').nth(1).unwrap_or_default().to_string()
+        } else {
+            tokens
+        };
+        [
+            Line::from(s),
+            Line::from(Span::styled(row, Style::default().fg(theme.graph_text))),
+        ]
+    };
+    if let Some(used_pct) = rl.five_hour_pct {
+        let label = format_window_label(rl.five_hour_window_minutes, t("quota.5h"));
+        let reset = rl.five_hour_resets_at.filter(|_| show_reset);
+        lines.extend(window_rows(
+            label,
+            used_pct,
+            reset.map(format_reset_time).unwrap_or_default(),
+        ));
     }
     if let Some(used_pct) = rl.seven_day_pct {
-        let remaining = (100.0 - used_pct).clamp(0.0, 100.0);
-        let reset = if show_reset {
-            rl.seven_day_resets_at
-                .map(format_reset_time)
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let c = grad_at(cpu_grad, used_pct);
-        let label_7d = format_window_label(rl.seven_day_window_minutes, t("quota.7d"));
-        let mut s = vec![styled_label(
-            format!(" {}", label_7d).as_str(),
-            theme.graph_text,
-        )];
-        s.extend(remaining_bar(remaining, bar_w, cpu_grad, theme.meter_bg));
-        s.push(Span::styled(
-            format!(" {:>3.0}%", remaining),
-            Style::default().fg(c),
+        let label = format_window_label(rl.seven_day_window_minutes, t("quota.7d"));
+        let reset = rl.seven_day_resets_at.filter(|_| show_reset);
+        lines.extend(window_rows(
+            label,
+            used_pct,
+            reset.map(format_reset_time).unwrap_or_default(),
         ));
-        lines.push(Line::from(s));
-        // Always reserve the row so both columns line up vertically;
-        // when there's nothing meaningful to show (stale source or the
-        // cached reset moment is past), render it blank.
-        lines.push(Line::from(Span::styled(
-            if reset.is_empty() {
-                String::new()
-            } else {
-                format!("  {}", reset)
-            },
-            Style::default().fg(theme.graph_text),
-        )));
     }
 
     f.render_widget(Paragraph::new(lines), area);

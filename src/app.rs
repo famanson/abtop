@@ -1,4 +1,5 @@
-use crate::collector::{read_rate_limits, McpServer, MultiCollector};
+use crate::collector::kiro_quota::KiroQuotaFetcher;
+use crate::collector::{read_kiro_cache, read_rate_limits, McpServer, MultiCollector};
 use crate::host_info::{AgentAggregate, HostMetrics, HostSampler};
 use crate::model::{AgentSession, OrphanPort, RateLimitInfo, SessionStatus};
 use crate::theme::Theme;
@@ -97,6 +98,8 @@ pub struct App {
     /// Rate limit poll counter (read every 5 ticks = 10s)
     rate_limit_counter: u32,
     collector: MultiCollector,
+    /// None when `kiro` is hidden.
+    pub kiro_quota: Option<KiroQuotaFetcher>,
     /// Cached LLM-generated summaries, keyed by session_id.
     pub summaries: HashMap<String, String>,
     /// Session IDs currently being summarized.
@@ -181,6 +184,8 @@ impl App {
             prev_tokens: HashMap::new(),
             rate_limit_counter: 5,
             collector,
+            kiro_quota: (!hidden_agents.iter().any(|h| h.eq_ignore_ascii_case("kiro")))
+                .then(KiroQuotaFetcher::default),
             summaries,
             pending_summaries: HashSet::new(),
             summary_retries: HashMap::new(),
@@ -493,8 +498,11 @@ impl App {
 
     /// Full refresh used by the TUI: collect monitored data, then generate and
     /// retry session summaries. Equivalent to [`App::tick_no_summaries`] followed
-    /// by [`App::drain_and_retry_summaries`].
+    /// by [`App::drain_and_retry_summaries`], after polling the Kiro quota fetch.
     pub fn tick(&mut self) {
+        if self.kiro_quota.as_mut().is_some_and(KiroQuotaFetcher::poll) {
+            self.rate_limit_counter = 5;
+        }
         self.tick_no_summaries();
         self.drain_and_retry_summaries();
     }
@@ -540,6 +548,10 @@ impl App {
             self.rate_limit_counter = 0;
             let extra_dirs = self.collector.all_config_dirs();
             self.rate_limits = read_rate_limits(&extra_dirs);
+            // A hidden Kiro never fetches, so its cache is a stale leftover.
+            if self.kiro_quota.is_some() {
+                self.rate_limits.extend(read_kiro_cache());
+            }
             // Merge live rate limits from agent collectors (e.g. Codex JSONL parsing)
             self.rate_limits.extend(self.collector.agent_rate_limits());
         } else {

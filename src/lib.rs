@@ -173,7 +173,7 @@ pub fn run() -> io::Result<()> {
         if demo_mode {
             demo::populate_demo(&mut app);
         } else {
-            app.tick();
+            app.tick_no_summaries();
             // Wait for summaries: retry-aware budget (up to 30s total to allow 2 × 10s attempts + slack)
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             while std::time::Instant::now() < deadline {

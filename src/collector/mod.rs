@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod kiro_quota;
 pub mod mcp;
 pub mod opencode;
 pub mod process;
@@ -9,7 +10,7 @@ pub use claude::ClaudeCollector;
 pub use codex::CodexCollector;
 pub use mcp::McpServer;
 pub use opencode::OpenCodeCollector;
-pub use rate_limit::read_rate_limits;
+pub use rate_limit::{read_kiro_cache, read_rate_limits, write_kiro_cache};
 
 /// Abbreviate a filesystem path by replacing the home directory prefix with `~`.
 pub(crate) fn abbrev_path(path: &std::path::Path) -> String {

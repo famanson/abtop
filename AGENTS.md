@@ -76,7 +76,7 @@ Panel rendering priority (top to bottom):
 
 Panel descriptions:
 - **¹context**: Left = token rate braille sparkline (200-point history). Right = per-session context % bars with yellow/red warning.
-- **²quota**: Claude + Codex rate limit gauges side-by-side (5h and 7d windows with reset countdown). Quota is intentionally limited to Claude and Codex; do not add an OpenCode row unless OpenCode exposes a reliable account-level provider rate-limit source.
+- **²quota**: Claude + Codex + Kiro rate limit gauges side-by-side (5h and 7d windows for Claude and Codex, a 30-day credit window for Kiro, each with a reset countdown). Kiro's monthly credit window is read from `kiro-rate-limits.json` in abtop's cache dir (`~/Library/Caches/abtop` on macOS, `~/.cache/abtop` on Linux). Every 5 minutes, timed from the last attempt, the TUI's `tick` refreshes it: it spawns `kiro-cli acp --agent-engine=v3 --auth-method=cli`, sends JSON-RPC `initialize`, then `_kiro/account/getUsage` (sent before initialize's reply, it fails authentication), and writes `usageBreakdowns[0].percentage` (a number) and `billingCycleReset` + `T00:00:00Z` into the `seven_day` slot with `window_minutes` 43200. An attempt is capped at 20 s, and the child's process group (its process tree on Windows) is killed after each attempt and when abtop exits; a failed, timed-out or malformed reply leaves the last cache. `--once`, `--json` and `tick_no_summaries` only read the cache, which ages while no TUI runs; `hidden_agents = ["kiro"]` turns the fetch off. Known limits: an abtop hard-killed mid-fetch leaves the child until it reads stdin EOF (1-5 s with the real kiro-cli; a wedged one outlives abtop), and every launch fetches once (the throttle is per process). Do not add an OpenCode row unless OpenCode exposes a reliable account-level provider rate-limit source. In a column under 12 cells the rows are compact: no bar, no hint, the countdown's largest unit with its `in`/`还有` prefix when that fits; a label and percent that overflow the column (zh `30天100%` in 7 cells) show the percent alone, so 5h and 30-day rows are told apart by order; a row that fills the column exactly (`5h100%` in 6 cells, `5时100%` in 7, zh `还有 3时` in 8, the `CLAUDE` header in 6) touches the next column. A wide column's hint shows only when it fits whole: the en KIRO hint `kiro-cli login` needs 15 cells.
 - **³tokens**: Total token breakdown (in/out/cache) + per-turn sparkline for selected session.
 - **projects** (always visible): Per-project git branch + added/modified file counts.
 - **⁴ports**: Agent-spawned open ports + orphan ports (from dead sessions). Conflict detection.
@@ -387,7 +387,7 @@ abtop reads transcripts, prompts, tool inputs, and memory files. These may conta
 - **`--once` output**: redact file contents from tool_use inputs. Show tool name + file path only, not content.
 - **TUI mode**: show tool name + first arg (file path), never show file contents or prompt text in session list.
 - **No network**: abtop never sends data anywhere. All local reads.
-- **Exception**: summary generation calls `claude --print` locally (no network by abtop itself, but claude may use its API).
+- **Exceptions**: summary generation calls `claude --print` and the Kiro quota fetch sends getUsage to `kiro-cli acp`, both locally (no network by abtop itself, but claude and kiro-cli may use their APIs).
 
 ## Gotchas
 
