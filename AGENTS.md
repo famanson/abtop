@@ -2,7 +2,7 @@
 
 AI agent monitor for your terminal. Like btop++, but for AI coding agents.
 
-Supports Claude Code, Codex CLI, and OpenCode sessions.
+Supports Claude Code, Codex CLI, OpenCode and Kiro CLI sessions.
 
 ## Language Policy
 
@@ -29,6 +29,7 @@ src/
 │   ├── claude.rs           # Claude Code: session discovery, transcript parsing
 │   ├── codex.rs            # Codex CLI: session discovery via ps+lsof, JSONL parsing
 │   ├── opencode.rs         # OpenCode: session discovery via ps + SQLite DB parsing
+│   ├── kiro.rs             # Kiro CLI: session discovery via ps + ~/.kiro/sessions/cli JSON
 │   ├── process.rs          # Child process tree (ps) + open ports (lsof) + git stats
 │   └── rate_limit.rs       # Rate limit file reading (~/.claude/abtop-rate-limits.json)
 └── model/
@@ -171,7 +172,21 @@ Rate limits extracted from `token_count` events:
 - Discover running `opencode` processes via shared `ps` data.
 - Read recent sessions from OpenCode's SQLite DB through `sqlite3 -readonly -json`.
 - Match live PIDs to DB sessions by process cwd. OpenCode does not expose a PID/session mapping, so when multiple DB rows share one cwd, only live PIDs should be assigned and older rows should not be shown as live duplicates.
-- OpenCode contributes session/token/project/port data, but not quota data. Quota remains Claude + Codex only.
+- OpenCode contributes session/token/project/port data, but not quota data.
+
+### 4a. Kiro CLI sessions: `~/.kiro/sessions/cli/<id>.json`
+- Discover running `kiro-cli-chat chat …` processes via shared `ps` data. The `acp` child and abtop's own quota `kiro-cli acp` are not chats.
+- Status is Thinking when the `<id>.jsonl` mtime is under 30 s old, its last line is an `AssistantMessage` whose last block is `toolUse`, or within the last 30 s the chat's CPU or a descendant's was over 1 %. Otherwise it is Waiting. Only metadata and the last line's `kind`s (from a 64 KiB tail) are read: never the `title` or any event's text.
+- Session files are read on the slow tick, and on every tick until a read succeeds. A directory read that fails keeps the last list; a file that fails to parse is left out until the next slow tick.
+- Each file pairs with the live chat its `<id>.lock` names (`{"pid":<acp pid>,"started_at":…}`): the pid's parent chain is walked to a `kiro-cli-chat chat` PID, one hop headless, two under the TUI's bun. The cwd lookup (`lsof`, cached by PID) pairs nothing: it feeds the cwd column, the git stats and the project name, the cwd's last segment.
+- A failed cwd lookup keeps the chat's last good cwd. A chat with no file whose lock walks to it is a stub `kiro-<pid>`; Kiro writes `.json` and `.lock` at launch, so this lasts until the slow tick after launch. A pre-turn `.json` (`agent_name`, `model_info` null) parses; its model reads `-`.
+- Credits are summed from each turn's `metering_usage`, beside the per-turn token counts. The detail footer shows them when they are positive.
+- Quota comes from the Kiro cache file (see ²quota).
+- Known limit: a lock left by a killed tree names a dead pid and is never claimed. If that pid is reused under a live chat, the chat owns two files and the newer lock `started_at` wins, wrong only when the reused pid is a tool child of an older chat, for that child's life. `started_at` is not compared with a process start time: the `ps` data has none.
+- Known limit: a Kiro build that writes no `.lock` shows every chat as a stub.
+- Known limit: a last line over 64 KiB reads Waiting during a sleeping tool.
+- Known limit: a chat in `/` has no cwd segment, so its project is blank.
+- Known limit: on Windows, a binary path quoted with two spaces is not recognised by the two-token scan. On every platform, kill refuses, not kills, a `kiro-cli-chat chat` whose first argument is `acp`.
 
 ### 5. Subagents: `~/.claude/projects/{path}/{sessionId}/subagents/`
 - `agent-{hash}.jsonl` — same JSONL format as main transcript

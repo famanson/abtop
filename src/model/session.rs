@@ -223,6 +223,8 @@ pub struct AgentSession {
     /// For Claude Code: the active .claude* profile folder. For Codex: "~/.codex".
     /// For OpenCode: the data directory containing opencode.db.
     pub config_root: String,
+    /// Credits spent so far (Kiro only; 0 elsewhere).
+    pub credits: f64,
 }
 
 impl AgentSession {
@@ -332,6 +334,7 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: Vec::new(),
+            credits: 0.0,
             config_root: String::new(),
         }
     }

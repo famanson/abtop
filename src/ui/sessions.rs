@@ -137,6 +137,7 @@ pub(crate) fn draw_sessions_panel_active(
             "claude" => ("*CC", Color::Rgb(217, 119, 87)), // #D97757 terracotta
             "codex" => (">CD", Color::Rgb(122, 157, 255)), // #7A9DFF periwinkle
             "opencode" => ("#OC", Color::Rgb(74, 222, 128)), // #4ADE80 emerald
+            "kiro" => ("^KR", Color::Rgb(192, 132, 252)),  // #C084FC violet
             other => {
                 let fallback: String = other.chars().take(3).collect::<String>().to_uppercase();
                 (
@@ -884,13 +885,19 @@ pub(crate) fn draw_sessions_panel_active(
             } else {
                 format!(" · effort: {}", session.effort)
             };
+            let credits_part = if session.credits > 0.0 {
+                format!(" · {:.2} credits", session.credits)
+            } else {
+                String::new()
+            };
             footer_lines.push(Line::from(Span::styled(
                 format!(
-                    " {} · {} · {} turns{}",
+                    " {} · {} · {} turns{}{}",
                     session.version,
                     session.elapsed_display(),
                     session.turn_count,
                     effort_part,
+                    credits_part,
                 ),
                 Style::default().fg(theme.inactive_fg),
             )));
@@ -1315,6 +1322,7 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: Vec::new(),
+            credits: 0.0,
             config_root: String::new(),
         });
 
@@ -1516,6 +1524,7 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: Vec::new(),
+            credits: 0.0,
             config_root: "~/.claude".into(),
         }
     }

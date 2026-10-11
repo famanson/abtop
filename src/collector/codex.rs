@@ -668,6 +668,7 @@ impl CodexCollector {
                 pending_since_ms: result.pending_since_ms,
                 thinking_since_ms: result.thinking_since_ms,
                 file_accesses: result.file_accesses,
+                credits: 0.0,
                 config_root: super::abbrev_path(
                     self.sessions_dir
                         .parent()

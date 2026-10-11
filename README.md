@@ -2,8 +2,8 @@
 
 **Like [btop](https://github.com/aristocratos/btop), but for your AI coding agents.**
 
-See every Claude Code, Codex CLI, and OpenCode session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
-Claude Code, Codex CLI, and OpenCode sessions are discovered from local process/file state, so multiple active profiles are supported across macOS, Linux, and Windows.
+See every Claude Code, Codex CLI, OpenCode, and Kiro CLI session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
+Claude Code, Codex CLI, OpenCode, and Kiro CLI sessions are discovered from local process/file state, so multiple active profiles are supported across macOS, Linux, and Windows.
 
 ![demo](https://raw.githubusercontent.com/graykode/abtop/main/assets/demo.gif)
 
@@ -75,20 +75,22 @@ tmux new -s work
 
 ## Supported Agents
 
-| Feature           | Claude Code | Codex CLI | OpenCode |
-| ----------------- | :---------: | :-------: | :------: |
-| Session Discovery |     ✅      |    ✅     |    ✅    |
-| Token Tracking    |     ✅      |    ✅     |    ✅    |
-| Context Window %  |     ✅      |    ✅     |    ❌    |
-| Status Detection  |     ✅      |    ✅     |    ✅    |
-| Current Task      |     ✅      |    ✅     |    ❌    |
-| Rate Limit        |     ✅      |    ✅     |    ❌    |
-| Git Status        |     ✅      |    ✅     |    ✅    |
-| Children / Ports  |     ✅      |    ✅     |    ✅    |
-| Subagents         |     ✅      |    ❌     |    ❌    |
-| Memory Status     |     ✅      |    ❌     |    ❌    |
+| Feature           | Claude Code | Codex CLI | OpenCode | Kiro CLI |
+| ----------------- | :---------: | :-------: | :------: | :------: |
+| Session Discovery |     ✅      |    ✅     |    ✅    |    ✅    |
+| Token Tracking    |     ✅      |    ✅     |    ✅    |    ✅    |
+| Context Window %  |     ✅      |    ✅     |    ❌    |    ✅    |
+| Status Detection  |     ✅      |    ✅     |    ✅    |    ✅    |
+| Current Task      |     ✅      |    ✅     |    ❌    |    ❌    |
+| Rate Limit        |     ✅      |    ✅     |    ❌    |    ✅    |
+| Git Status        |     ✅      |    ✅     |    ✅    |    ✅    |
+| Children / Ports  |     ✅      |    ✅     |    ✅    |    ✅    |
+| Subagents         |     ✅      |    ❌     |    ❌    |    ❌    |
+| Memory Status     |     ✅      |    ❌     |    ❌    |    ❌    |
 
 OpenCode support reads the local SQLite database at `~/.local/share/opencode/opencode.db` (also the default location on Windows; `%LOCALAPPDATA%\opencode` and `%APPDATA%\opencode` are probed as fallbacks) and requires `sqlite3` in `PATH` (on Windows: `winget install SQLite.SQLite`).
+
+abtop fills the KIRO quota column through `kiro-cli` (installed and signed in); there is nothing to set up.
 
 ## Themes
 
@@ -191,7 +193,7 @@ is a reference consumer: a local-first web dashboard built on exactly this API.
 
 ## Privacy
 
-abtop reads local files and local process/open-file metadata only. No API keys, no auth. In the TUI and `--once` output, tool names and file paths are shown, but file contents and prompt text are never displayed. Session summaries are generated via `claude --print`, which makes its own API call — this is the only indirect network usage.
+abtop reads local files and local process/open-file metadata only. No API keys, no auth. In the TUI and `--once` output, tool names and file paths are shown, but file contents and prompt text are never displayed. Session summaries via `claude --print` and the KIRO quota via `kiro-cli acp` getUsage are the only indirect network usage: each tool makes its own API call.
 
 The JSON snapshot includes richer local dashboard data, including `summary`, `chat_messages`, working directories, config roots, tool-call previews, child process commands, token counts, and port metadata. Chat text is bounded and redacted by the collectors, but it is still derived from local transcripts and may contain sensitive project context. Treat JSON snapshots as local/private data and avoid writing them to shared logs or exposing them on a network without your own access controls.
 

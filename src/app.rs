@@ -1014,11 +1014,14 @@ fn is_supported_agent_command(cmd: &str) -> bool {
     crate::collector::process::cmd_has_binary(cmd, "claude")
         || crate::collector::process::cmd_has_binary(cmd, "codex")
         || crate::collector::process::cmd_has_binary(cmd, "opencode")
+        || crate::collector::process::cmd_has_binary(cmd, "kiro-cli-chat")
 }
 
 fn is_killable_agent_command(cmd: &str) -> bool {
     is_supported_agent_command(cmd)
         && !(crate::collector::process::cmd_has_binary(cmd, "codex") && cmd.contains(" app-server"))
+        && !(crate::collector::process::cmd_has_binary(cmd, "kiro-cli-chat")
+            && cmd.split_whitespace().skip(1).take(2).any(|t| t == "acp"))
 }
 
 #[cfg(test)]
@@ -1063,6 +1066,7 @@ mod tests {
             pending_since_ms: 0,
             thinking_since_ms: 0,
             file_accesses: vec![],
+            credits: 0.0,
             config_root: String::new(),
             git_added: 0,
             git_modified: 0,
@@ -1115,15 +1119,33 @@ mod tests {
         assert!(is_supported_agent_command("/usr/local/bin/claude"));
         assert!(is_supported_agent_command("codex --resume abc"));
         assert!(is_supported_agent_command("/opt/homebrew/bin/opencode"));
+        assert!(is_supported_agent_command(
+            "kiro-cli-chat chat --no-interactive --agent x"
+        ));
         assert!(!is_supported_agent_command("node server.js"));
     }
 
     #[test]
-    fn killable_agent_command_rejects_codex_app_server() {
+    fn killable_agent_command_rejects_codex_app_server_and_kiro_acp() {
         assert!(is_killable_agent_command("codex --resume abc"));
         assert!(is_killable_agent_command("/usr/local/bin/claude"));
         assert!(!is_killable_agent_command(
             "/Applications/Codex.app/Contents/Resources/codex app-server --analytics-default-enabled"
+        ));
+        assert!(!is_killable_agent_command(
+            "/Users/x/.local/bin/kiro-cli-chat acp --trust-all-tools --effort high"
+        ));
+        assert!(!is_killable_agent_command(
+            "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli-chat acp --trust-all-tools"
+        ));
+        assert!(is_killable_agent_command(
+            "/Users/x/.local/bin/kiro-cli-chat chat --no-interactive --agent x"
+        ));
+        assert!(is_killable_agent_command(
+            "/Users/x/.local/bin/kiro-cli-chat chat --no-interactive --agent acp-x"
+        ));
+        assert!(is_killable_agent_command(
+            "kiro-cli-chat chat --agent x acp"
         ));
     }
 }

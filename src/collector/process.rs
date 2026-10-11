@@ -1,3 +1,4 @@
+use crate::model::ChildProcess;
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::fs;
@@ -213,6 +214,53 @@ pub fn get_children_map(procs: &HashMap<u32, ProcInfo>) -> HashMap<u32, Vec<u32>
     children
 }
 
+/// Every descendant of `pid`, with a visited set against ppid cycles.
+pub fn children_of(
+    pid: u32,
+    children_map: &HashMap<u32, Vec<u32>>,
+    process_info: &HashMap<u32, ProcInfo>,
+    ports: &HashMap<u32, Vec<u16>>,
+) -> Vec<ChildProcess> {
+    let mut children = Vec::new();
+    let mut stack: Vec<u32> = children_map.get(&pid).cloned().unwrap_or_default();
+    let mut visited = std::collections::HashSet::new();
+    while let Some(cpid) = stack.pop() {
+        if !visited.insert(cpid) {
+            continue;
+        }
+        if let Some(cproc) = process_info.get(&cpid) {
+            children.push(ChildProcess {
+                pid: cpid,
+                command: cproc.command.clone(),
+                mem_kb: cproc.rss_kb,
+                port: ports.get(&cpid).and_then(|v| v.first().copied()),
+            });
+        }
+        if let Some(grandchildren) = children_map.get(&cpid) {
+            stack.extend(grandchildren);
+        }
+    }
+    children
+}
+
+/// Compare a process cwd with a session's recorded directory.
+/// On Windows paths are case-insensitive and may mix `/` and `\`, so
+/// normalize before comparing; elsewhere keep the exact comparison.
+#[cfg(target_os = "windows")]
+pub fn paths_equal(a: &str, b: &str) -> bool {
+    let norm = |s: &str| {
+        s.replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    };
+    norm(a) == norm(b)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn paths_equal(a: &str, b: &str) -> bool {
+    a == b
+}
+
 /// Walk the ppid chain from `pid` and return true if `ancestor` is reached.
 /// Used to identify processes spawned by abtop itself (e.g. `claude --print`
 /// summary children) so they can be filtered without dropping unrelated
@@ -393,6 +441,52 @@ pub fn last_path_segment(s: &str) -> Option<&str> {
     #[cfg(not(windows))]
     let segment = s.rsplit('/').next();
     segment
+}
+
+/// Get the current working directory of a process.
+/// Uses /proc on Linux, sysinfo (PEB) on Windows, lsof on macOS/other Unix.
+#[cfg(target_os = "linux")]
+pub(crate) fn get_process_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{}/cwd", pid))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn get_process_cwd(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    // `lsof` does not exist on Windows; sysinfo reads the cwd from the
+    // process PEB. Refresh just this one PID — this runs only for the
+    // handful of agent PIDs, once per tick.
+    let mut sys = System::new();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        false,
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    sys.process(pid)
+        .and_then(|p| p.cwd())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+pub(crate) fn get_process_cwd(pid: u32) -> Option<String> {
+    // -a ANDs the selection terms; without it, lsof ORs `-p <pid>` with
+    // `-d cwd` and returns cwd entries for unrelated processes too.
+    let output = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // lsof -Fn output: lines starting with 'n' contain the path
+    stdout
+        .lines()
+        .find(|l| l.starts_with('n') && l.len() > 1)
+        .map(|l| l[1..].to_string())
 }
 
 /// Check if a command string has a given binary name in executable position.

@@ -1,5 +1,5 @@
 use super::{process, context_window_for_model};
-use crate::model::{AgentSession, ChildProcess, LaunchSurface, SessionStatus};
+use crate::model::{AgentSession, LaunchSurface, SessionStatus};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -152,31 +152,12 @@ impl OpenCodeCollector {
                 vec!["thinking...".to_string()]
             };
 
-            // Collect child processes with cycle guard (visited set)
-            let mut children = Vec::new();
-            let mut stack: Vec<u32> = shared
-                .children_map
-                .get(&matched_pid)
-                .cloned()
-                .unwrap_or_default();
-            let mut visited = std::collections::HashSet::new();
-            while let Some(cpid) = stack.pop() {
-                if !visited.insert(cpid) {
-                    continue;
-                }
-                if let Some(cproc) = shared.process_info.get(&cpid) {
-                    let port = shared.ports.get(&cpid).and_then(|v| v.first().copied());
-                    children.push(ChildProcess {
-                        pid: cpid,
-                        command: cproc.command.clone(),
-                        mem_kb: cproc.rss_kb,
-                        port,
-                    });
-                }
-                if let Some(grandchildren) = shared.children_map.get(&cpid) {
-                    stack.extend(grandchildren);
-                }
-            }
+            let children = process::children_of(
+                matched_pid,
+                &shared.children_map,
+                &shared.process_info,
+                &shared.ports,
+            );
 
             let model = if !ds.provider.is_empty() && !ds.model.is_empty() {
                 format!("{}/{}", ds.provider, ds.model)
@@ -231,6 +212,7 @@ impl OpenCodeCollector {
                 pending_since_ms: 0,
                 thinking_since_ms: 0,
                 file_accesses: vec![],
+                credits: 0.0,
                 config_root: super::abbrev_path(
                     self.db_path.parent().unwrap_or(std::path::Path::new(".")),
                 ),
@@ -287,8 +269,8 @@ impl OpenCodeCollector {
             if claimed_pids.contains(&pid) {
                 continue;
             }
-            if let Some(cwd) = get_process_cwd(pid) {
-                if paths_equal(&cwd, session_dir) {
+            if let Some(cwd) = process::get_process_cwd(pid) {
+                if process::paths_equal(&cwd, session_dir) {
                     return Some(pid);
                 }
             }
@@ -465,24 +447,6 @@ fn truncate_field(s: &mut String, max_bytes: usize) {
     }
 }
 
-/// Compare a process cwd with a DB session directory.
-/// On Windows paths are case-insensitive and may mix `/` and `\`, so
-/// normalize before comparing; elsewhere keep the exact comparison.
-#[cfg(target_os = "windows")]
-fn paths_equal(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        s.replace('/', "\\")
-            .trim_end_matches('\\')
-            .to_ascii_lowercase()
-    };
-    norm(a) == norm(b)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn paths_equal(a: &str, b: &str) -> bool {
-    a == b
-}
-
 /// On Windows, OpenCode builds (e.g. installed via npm) have been observed to
 /// keep the XDG-style `~/.local/share/opencode` layout, so prefer the same
 /// path as unix; fall back to probing `%LOCALAPPDATA%` / `%APPDATA%` in case
@@ -504,52 +468,6 @@ fn windows_db_path(default: PathBuf) -> PathBuf {
         }
     }
     default
-}
-
-/// Get the current working directory of a process.
-/// Uses /proc on Linux, sysinfo (PEB) on Windows, lsof on macOS/other Unix.
-#[cfg(target_os = "linux")]
-fn get_process_cwd(pid: u32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{}/cwd", pid))
-        .ok()
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-#[cfg(target_os = "windows")]
-fn get_process_cwd(pid: u32) -> Option<String> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    // `lsof` does not exist on Windows; sysinfo reads the cwd from the
-    // process PEB. Refresh just this one PID — this runs only for the
-    // handful of opencode PIDs, once per tick.
-    let mut sys = System::new();
-    let pid = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::Some(&[pid]),
-        false,
-        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
-    );
-    sys.process(pid)
-        .and_then(|p| p.cwd())
-        .map(|p| p.to_string_lossy().into_owned())
-}
-
-#[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
-fn get_process_cwd(pid: u32) -> Option<String> {
-    // -a ANDs the selection terms; without it, lsof ORs `-p <pid>` with
-    // `-d cwd` and returns cwd entries for unrelated processes too.
-    let output = Command::new("lsof")
-        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // lsof -Fn output: lines starting with 'n' contain the path
-    stdout
-        .lines()
-        .find(|l| l.starts_with('n') && l.len() > 1)
-        .map(|l| l[1..].to_string())
 }
 
 fn current_time_ms() -> u64 {
