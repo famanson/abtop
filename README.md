@@ -5,7 +5,7 @@
 See every Claude Code, Codex CLI, OpenCode, and Kiro CLI session at a glance — token usage, context window %, rate limits, child processes, open ports, and more.
 Claude Code, Codex CLI, OpenCode, and Kiro CLI sessions are discovered from local process/file state, so multiple active profiles are supported across macOS, Linux, and Windows.
 
-![demo](https://raw.githubusercontent.com/graykode/abtop/main/assets/demo.gif)
+![demo](assets/demo.gif)
 
 ## Why
 

@@ -35,7 +35,13 @@ Sleep 4s
 Type "l"
 Sleep 1.5s
 
+# Down to the Kiro row: ^KR badge in the list, credits in the detail footer.
+Type "jjj"
+Sleep 4s
+
 # Scroll back up.
+Type "kkk"
+Sleep 1s
 Type "k"
 Sleep 1s
 Type "k"
