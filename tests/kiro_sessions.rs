@@ -983,3 +983,22 @@ fn sessions_pane_tags_kiro_in_a_fixed_colour() {
         assert_eq!(cell.fg, Color::Rgb(192, 132, 252));
     }
 }
+
+#[test]
+fn the_demo_lists_a_kiro_session_last_with_credits() {
+    let mut app = App::new_with_config_and_claude_dirs(
+        Theme::default(),
+        &[],
+        PanelVisibility::default(),
+        &[],
+    );
+    abtop::demo::populate_demo(&mut app);
+
+    let last = app.sessions.last().unwrap();
+    assert_eq!(
+        last.agent_cli, "kiro",
+        "last demo session: {}",
+        last.agent_cli
+    );
+    assert!(last.credits > 0.0, "credits: {}", last.credits);
+}
