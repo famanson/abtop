@@ -5,7 +5,7 @@ use abtop::collector::kiro::KiroCollector;
 use abtop::collector::process::ProcInfo;
 use abtop::collector::{AgentCollector, SharedProcessData};
 use abtop::config::PanelVisibility;
-use abtop::model::{AgentSession, SessionStatus};
+use abtop::model::{AgentSession, LaunchSurface, SessionStatus};
 use abtop::theme::Theme;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -393,6 +393,25 @@ fn a_pre_turn_file_with_null_model_info_pairs() {
 }
 
 #[test]
+fn a_first_turn_file_with_null_context_usage_pairs() {
+    let d = dirs();
+    let mut file = session_file("sess-a", &d.project, "2026-01-02T04:00:00Z", vec![]);
+    // A KiroCrew session's `.json` until its first turn ends (live, 2026-10-13).
+    file["session_state"]["rts_model_state"]["context_usage_percentage"] = Value::Null;
+    write(&d.sessions, "sess-a", &file);
+    let mut procs = Procs::new();
+    let acp = spawn_kirocrew_acp(&mut procs, &d);
+    lock(&d.sessions, "sess-a", acp, LOCKED_AT);
+
+    let s = only(collect(&d, &mut procs));
+
+    assert_eq!(
+        (s.session_id.as_str(), s.model.as_str(), s.context_percent),
+        ("sess-a", "test-model-1", 0.0)
+    );
+}
+
+#[test]
 fn model_is_a_dash_when_model_id_is_absent() {
     let d = dirs();
     let mut file = two_turns(&d);
@@ -585,6 +604,54 @@ fn only_the_chat_subcommand_is_listed() {
     );
 
     assert_eq!(only(collect(&d, &mut procs)).pid, chat);
+}
+
+/// A `kiro-cli-chat acp` under KiroCrew's gateway, as KiroCrew runs each of its sessions.
+fn spawn_kirocrew_acp(procs: &mut Procs, d: &Dirs) -> u32 {
+    let gateway = procs.spawn(
+        &d.project,
+        "/Applications/KiroCrew.app/Contents/Resources/backend-dist/kirocrew-backend-arm64/bin/python3.12 -s -P -m kiro_crew gateway --no-open --port 5476",
+    );
+    let acp = spawn_child(procs, d, gateway, 0.0);
+    procs.info.get_mut(&acp).unwrap().command =
+        "/Applications/KiroCrew.app/Contents/Resources/backend-dist/kiro-cli/kiro-cli-chat acp --agent kirocrew-skill-view-71889d3027649422568cbdb0".into();
+    acp
+}
+
+#[test]
+fn a_kirocrew_acp_session_is_listed_as_an_app_session() {
+    let d = dirs();
+    write(&d.sessions, "sess-a", &two_turns(&d));
+    let mut procs = Procs::new();
+    let acp = spawn_kirocrew_acp(&mut procs, &d);
+    lock(&d.sessions, "sess-a", acp, LOCKED_AT);
+
+    let s = only(collect(&d, &mut procs));
+
+    assert_eq!(
+        (s.pid, s.session_id.as_str(), s.project_name.as_str()),
+        (acp, "sess-a", "my-project")
+    );
+    assert_eq!((s.model.as_str(), s.turn_count), ("test-model-1", 2));
+    assert_eq!(s.launch_surface, LaunchSurface::App);
+    assert_no_leak(&s);
+}
+
+#[test]
+fn an_acp_no_lock_names_is_not_listed() {
+    let d = dirs();
+    write(&d.sessions, "sess-a", &two_turns(&d));
+    let mut procs = Procs::new();
+    spawn_kirocrew_acp(&mut procs, &d);
+    let quota = procs.spawn(
+        &d.project,
+        "kiro-cli acp --agent-engine=v3 --auth-method=cli",
+    );
+    let quota_acp = spawn_child(&mut procs, &d, quota, 0.0);
+    procs.info.get_mut(&quota_acp).unwrap().command =
+        "/Users/x/.local/bin/kiro-cli-chat acp --agent-engine=v3 --auth-method=cli".into();
+
+    assert!(collect(&d, &mut procs).is_empty());
 }
 
 fn session_ids(sessions: &[AgentSession]) -> HashMap<u32, &str> {

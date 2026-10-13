@@ -90,7 +90,7 @@ tmux new -s work
 
 OpenCode support reads the local SQLite database at `~/.local/share/opencode/opencode.db` (also the default location on Windows; `%LOCALAPPDATA%\opencode` and `%APPDATA%\opencode` are probed as fallbacks) and requires `sqlite3` in `PATH` (on Windows: `winget install SQLite.SQLite`).
 
-abtop fills the KIRO quota column through `kiro-cli` (installed and signed in); there is nothing to set up.
+Kiro CLI sessions include those an app runs over `kiro-cli acp`, such as KiroCrew's, flagged `a` beside the agent label. abtop fills the KIRO quota column through `kiro-cli` (installed and signed in); there is nothing to set up.
 
 ## Themes
 

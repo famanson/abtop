@@ -9,10 +9,12 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_CONTEXT_WINDOW: u64 = 200_000;
 
-/// Collector for Kiro CLI (`kiro-cli chat`) sessions.
+/// Collector for Kiro CLI (`kiro-cli chat`) sessions, and the `kiro-cli-chat acp`
+/// sessions an app such as KiroCrew hosts.
 ///
 /// Discovery: live `kiro-cli-chat chat` processes, each paired with the `<id>.json`
-/// in `~/.kiro/sessions/cli` whose `<id>.lock` names the chat or a descendant.
+/// in `~/.kiro/sessions/cli` whose `<id>.lock` names the chat or a descendant, and
+/// live `acp` processes no chat runs, each listed only once a lock claims it.
 /// Thinking while the sibling `<id>.jsonl` changed or the chat or a child was over
 /// 1 % CPU in the last 30 s, or the log's last message ends in a `toolUse`, else
 /// Waiting. Only the log's mtime and the last line's block kinds from a 64 KiB tail
@@ -70,7 +72,8 @@ struct Metering {
 #[serde(default)]
 struct ModelState {
     model_info: Option<ModelInfo>,
-    context_usage_percentage: f64,
+    /// Null until the first turn ends.
+    context_usage_percentage: Option<f64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -100,7 +103,7 @@ struct Block {
     kind: String,
 }
 
-/// `<id>.lock`: the pid is the chat's own or its `acp` child's; missing reads as pid 0.
+/// `<id>.lock`: the pid is the chat's own, its `acp` child's or a hosted `acp`'s; missing reads as pid 0.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct Lock {
@@ -189,6 +192,7 @@ impl KiroCollector {
         pid: u32,
         cwd: &str,
         entry: Option<&SessionEntry>,
+        launch_surface: LaunchSurface,
         shared: &SharedProcessData,
     ) -> AgentSession {
         let state = entry.map(|e| &e.file.session_state);
@@ -228,7 +232,7 @@ impl KiroCollector {
 
         AgentSession {
             agent_cli: "kiro",
-            launch_surface: LaunchSurface::Cli,
+            launch_surface,
             pid,
             session_id: entry
                 .map(|e| e.id.clone())
@@ -244,7 +248,9 @@ impl KiroCollector {
                 .filter(|m| !m.is_empty())
                 .unwrap_or_else(|| "-".to_string()),
             effort: String::new(),
-            context_percent: state.map_or(0.0, |s| s.rts_model_state.context_usage_percentage),
+            context_percent: state
+                .and_then(|s| s.rts_model_state.context_usage_percentage)
+                .unwrap_or(0.0),
             total_input_tokens: turns.iter().map(|t| t.input_token_count).sum(),
             total_output_tokens: turns.iter().map(|t| t.output_token_count).sum(),
             total_cache_read: turns.iter().map(|t| t.cache_read_input_token_count).sum(),
@@ -302,15 +308,10 @@ impl Default for KiroCollector {
 
 impl AgentCollector for KiroCollector {
     fn collect(&mut self, shared: &SharedProcessData) -> Vec<AgentSession> {
-        let pids = find_chat_pids(&shared.process_info);
-        self.refresh_process_cwds(&pids, shared.slow_tick);
         let (info, kids) = (&shared.process_info, &shared.children_map);
-        for &pid in &pids {
-            if info[&pid].cpu_pct > 1.0 || process::has_active_descendant(pid, kids, info, 1.0) {
-                self.last_busy.insert(pid, Instant::now());
-            }
-        }
-        if pids.is_empty() {
+        let (chats, hosted) = find_session_pids(info);
+        if chats.is_empty() && hosted.is_empty() {
+            self.refresh_process_cwds(&[], false);
             return vec![];
         }
         // A failed read keeps the last good files rather than stubbing every chat.
@@ -320,42 +321,79 @@ impl AgentCollector for KiroCollector {
             }
         }
 
-        // A file belongs to the live chat its lock pid is or descends from; the newer lock wins.
-        let mut file_by_chat: HashMap<u32, &SessionEntry> = HashMap::new();
-        for entry in self.cached_entries.iter().flatten() {
-            let (mut pid, mut visited) = (entry.lock.pid, HashSet::new());
-            while pid > 1 && !pids.contains(&pid) && visited.insert(pid) {
-                pid = info.get(&pid).map_or(0, |p| p.ppid);
-            }
-            if pids.contains(&pid) {
-                file_by_chat.entry(pid).or_insert(entry);
+        // A file belongs to the live process its lock pid is or descends from; the newer lock wins.
+        let owners: HashSet<u32> = chats.iter().chain(&hosted).copied().collect();
+        let mut file_by_pid: HashMap<u32, usize> = HashMap::new();
+        for (i, entry) in self.cached_entries.iter().flatten().enumerate() {
+            if let Some(pid) = claimant(entry.lock.pid, &owners, info) {
+                file_by_pid.entry(pid).or_insert(i);
             }
         }
+        // An `acp` no lock names is idle or abtop's own quota fetch, not a session.
+        let hosted: HashSet<u32> = hosted
+            .into_iter()
+            .filter(|pid| file_by_pid.contains_key(pid))
+            .collect();
+        let pids: Vec<u32> = chats.into_iter().chain(hosted.iter().copied()).collect();
+
+        self.refresh_process_cwds(&pids, shared.slow_tick);
+        for &pid in &pids {
+            if info[&pid].cpu_pct > 1.0 || process::has_active_descendant(pid, kids, info, 1.0) {
+                self.last_busy.insert(pid, Instant::now());
+            }
+        }
+        let entries = self.cached_entries.as_deref().unwrap_or_default();
         pids.iter()
             .map(|&pid| {
-                let entry = file_by_chat.get(&pid).copied();
-                self.session(pid, &self.process_cwds[&pid], entry, shared)
+                let surface = if hosted.contains(&pid) {
+                    LaunchSurface::App
+                } else {
+                    LaunchSurface::Cli
+                };
+                let entry = file_by_pid.get(&pid).map(|&i| &entries[i]);
+                self.session(pid, &self.process_cwds[&pid], entry, surface, shared)
             })
             .collect()
     }
 }
 
-/// `kiro-cli-chat chat …` only: its own `acp` child and abtop's own quota `kiro-cli acp` are not chats.
-/// `chat` may be token 2 when the binary path holds a space, as `cmd_has_binary` allows.
-fn find_chat_pids(process_info: &HashMap<u32, process::ProcInfo>) -> Vec<u32> {
-    process_info
-        .iter()
-        .filter(|(_, info)| {
-            process::cmd_has_binary(&info.command, "kiro-cli-chat")
-                && info
-                    .command
-                    .split_whitespace()
-                    .skip(1)
-                    .take(2)
-                    .any(|t| t == "chat")
-        })
-        .map(|(pid, _)| *pid)
-        .collect()
+/// `kiro-cli-chat chat …` processes, then the `kiro-cli-chat acp` ones no chat runs:
+/// those an app such as KiroCrew hosts, and abtop's own quota fetch. The subcommand
+/// may be token 2 when the binary path holds a space, as `cmd_has_binary` allows.
+fn find_session_pids(info: &HashMap<u32, process::ProcInfo>) -> (Vec<u32>, Vec<u32>) {
+    let with_subcommand = |name: &str| -> Vec<u32> {
+        info.iter()
+            .filter(|(_, p)| {
+                process::cmd_has_binary(&p.command, "kiro-cli-chat")
+                    && p.command
+                        .split_whitespace()
+                        .skip(1)
+                        .take(2)
+                        .any(|t| t == name)
+            })
+            .map(|(pid, _)| *pid)
+            .collect()
+    };
+    let chats = with_subcommand("chat");
+    let chat_set: HashSet<u32> = chats.iter().copied().collect();
+    let hosted = with_subcommand("acp")
+        .into_iter()
+        .filter(|&pid| claimant(pid, &chat_set, info).is_none())
+        .collect();
+    (chats, hosted)
+}
+
+/// The first of `pid` and its ancestors that is one of `owners`.
+fn claimant(
+    mut pid: u32,
+    owners: &HashSet<u32>,
+    info: &HashMap<u32, process::ProcInfo>,
+) -> Option<u32> {
+    let mut visited = HashSet::new();
+    while pid > 1 && !owners.contains(&pid) && visited.insert(pid) {
+        pid = info.get(&pid).map_or(0, |p| p.ppid);
+    }
+    owners.contains(&pid).then_some(pid)
 }
 
 fn parse_ms(rfc3339: &str) -> Option<u64> {

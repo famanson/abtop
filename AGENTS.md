@@ -175,18 +175,19 @@ Rate limits extracted from `token_count` events:
 - OpenCode contributes session/token/project/port data, but not quota data.
 
 ### 4a. Kiro CLI sessions: `~/.kiro/sessions/cli/<id>.json`
-- Discover running `kiro-cli-chat chat …` processes via shared `ps` data. The `acp` child and abtop's own quota `kiro-cli acp` are not chats.
+- Discover running `kiro-cli-chat chat …` processes via shared `ps` data, and the `kiro-cli-chat acp` processes no chat runs. A chat's own `acp` child is part of the chat. An app such as KiroCrew runs each of its sessions as an `acp` of its own; such an `acp` is listed only once a lock claims it, flagged `a` (App), so an idle one and abtop's own quota `kiro-cli acp` never are.
 - Status is Thinking when the `<id>.jsonl` mtime is under 30 s old, its last line is an `AssistantMessage` whose last block is `toolUse`, or within the last 30 s the chat's CPU or a descendant's was over 1 %. Otherwise it is Waiting. Only metadata and the last line's `kind`s (from a 64 KiB tail) are read: never the `title` or any event's text.
 - Session files are read on the slow tick, and on every tick until a read succeeds. A directory read that fails keeps the last list; a file that fails to parse is left out until the next slow tick.
-- Each file pairs with the live chat its `<id>.lock` names (`{"pid":<acp pid>,"started_at":…}`): the pid's parent chain is walked to a `kiro-cli-chat chat` PID, one hop headless, two under the TUI's bun. The cwd lookup (`lsof`, cached by PID) pairs nothing: it feeds the cwd column, the git stats and the project name, the cwd's last segment.
-- A failed cwd lookup keeps the chat's last good cwd. A chat with no file whose lock walks to it is a stub `kiro-<pid>`; Kiro writes `.json` and `.lock` at launch, so this lasts until the slow tick after launch. A pre-turn `.json` (`agent_name`, `model_info` null) parses; its model reads `-`.
+- Each file pairs with the live chat or hosted `acp` its `<id>.lock` names (`{"pid":<acp pid>,"started_at":…}`): the pid's parent chain is walked to a `kiro-cli-chat chat` PID, one hop headless, two under the TUI's bun; a hosted `acp`'s lock names it directly. The cwd lookup (`lsof`, cached by PID) pairs nothing: it feeds the cwd column, the git stats and the project name, the cwd's last segment.
+- A failed cwd lookup keeps the chat's last good cwd. A chat with no file whose lock walks to it is a stub `kiro-<pid>`; Kiro writes `.json` and `.lock` at launch, so this lasts until the slow tick after launch, which is also when a hosted `acp` first shows. A pre-turn `.json` (`agent_name`, `model_info` null) parses; its model reads `-`. `context_usage_percentage` is null until the first turn ends and reads 0 %.
 - Credits are summed from each turn's `metering_usage`, beside the per-turn token counts. The detail footer shows them when they are positive.
 - Quota comes from the Kiro cache file (see ²quota).
-- Known limit: a lock left by a killed tree names a dead pid and is never claimed. If that pid is reused under a live chat, the chat owns two files and the newer lock `started_at` wins, wrong only when the reused pid is a tool child of an older chat, for that child's life. `started_at` is not compared with a process start time: the `ps` data has none.
-- Known limit: a Kiro build that writes no `.lock` shows every chat as a stub.
+- Known limit: a lock left by a killed tree names a dead pid and is never claimed. If that pid is reused under a live chat or hosted `acp`, it owns two files and the newer lock `started_at` wins, wrong only when the reused pid is a tool child of an older chat, for that child's life. `started_at` is not compared with a process start time: the `ps` data has none.
+- Known limit: a Kiro build that writes no `.lock` shows every chat as a stub and no hosted `acp`.
+- Known limit: an `acp` hosting several sessions shows only the one with the newest lock.
 - Known limit: a last line over 64 KiB reads Waiting during a sleeping tool.
 - Known limit: a chat in `/` has no cwd segment, so its project is blank.
-- Known limit: on Windows, a binary path quoted with two spaces is not recognised by the two-token scan. On every platform, kill refuses, not kills, a `kiro-cli-chat chat` whose first argument is `acp`.
+- Known limit: on Windows, a binary path quoted with two spaces is not recognised by the two-token scan. On every platform, kill refuses, not kills, a `kiro-cli-chat chat` whose first argument is `acp`, and so every hosted session: stop it in its app.
 
 ### 5. Subagents: `~/.claude/projects/{path}/{sessionId}/subagents/`
 - `agent-{hash}.jsonl` — same JSONL format as main transcript
